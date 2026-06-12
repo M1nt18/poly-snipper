@@ -1,5 +1,5 @@
 #define MyAppName "Poly Snipper"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.1.1"
 #define MyAppPublisher "POLY"
 #define MyAppExeName "PolySnipper.exe"
 
@@ -20,6 +20,8 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#MyAppExeName}
+CloseApplications=yes
+RestartApplications=no
 
 [Tasks]
 Name: "startup"; Description: "Start Poly Snipper when Windows starts"; GroupDescription: "Startup:"; Flags: checkedonce
@@ -37,3 +39,12 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+function InitializeSetup(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{cmd}'), '/C taskkill /IM PolySnipper.exe /F >NUL 2>NUL', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := True;
+end;

@@ -17,10 +17,10 @@ python poly_snipper.py
 - `Alt + A`: start region capture
 - Drag: select a region
 - `Esc`: cancel capture
-- After capture: image is copied to clipboard, saved as PNG, and opened in a topmost pin window
-- Drag pinned image: move it
-- `Copy`: copy the pinned image again
-- `Save As`: save another copy
+- After capture: image is copied to clipboard, saved as PNG, and opened in a topmost editor window
+- Editor tools: pen, rectangle, ellipse, arrow, text, color swatches, line width, undo
+- `Copy`: copy the edited image
+- `Save As`: save the edited image
 
 Screenshots are saved to:
 
