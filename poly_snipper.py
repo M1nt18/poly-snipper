@@ -19,7 +19,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
-from PIL import Image, ImageDraw, ImageGrab, ImageTk
+from PIL import Image, ImageDraw, ImageFont, ImageGrab, ImageTk
 
 try:
     import pystray
@@ -278,35 +278,85 @@ class CaptureOverlay(tk.Toplevel):
         self.app.finish_capture(crop)
 
 
-class PinWindow(tk.Toplevel):
+class EditorWindow(tk.Toplevel):
     def __init__(self, app: "PolySnipperApp", image: Image.Image, path: Path) -> None:
         super().__init__(app.root)
         self.app = app
         self.image = image
         self.path = path
         self.drag_offset: tuple[int, int] | None = None
+        self.tool = tk.StringVar(value="pen")
+        self.color = tk.StringVar(value="#ff2d2d")
+        self.stroke_width = tk.IntVar(value=3)
+        self.text_value = tk.StringVar(value="Text")
+        self.items: list[dict] = []
+        self.active_canvas_item: int | None = None
+        self.active_data: dict | None = None
+        self.pen_points: list[tuple[float, float]] = []
 
         self.title(f"{APP_NAME} - {path.name}")
         self.attributes("-topmost", True)
-        self.configure(bg="#111111")
+        self.configure(bg="#191919")
 
-        max_w = int(self.winfo_screenwidth() * 0.65)
-        max_h = int(self.winfo_screenheight() * 0.65)
+        max_w = int(self.winfo_screenwidth() * 0.82)
+        max_h = int(self.winfo_screenheight() * 0.72)
         display = image.copy()
         display.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
+        self.scale = display.width / image.width
         self.photo = ImageTk.PhotoImage(display)
 
-        self.image_label = tk.Label(self, image=self.photo, bd=0, bg="#111111")
-        self.image_label.pack(side="top")
+        self.canvas = tk.Canvas(
+            self,
+            width=display.width,
+            height=display.height,
+            highlightthickness=0,
+            bg="#111111",
+            cursor="crosshair",
+        )
+        self.canvas.pack(side="top")
+        self.canvas.create_image(0, 0, image=self.photo, anchor="nw")
+        self.canvas.bind("<ButtonPress-1>", self.on_press)
+        self.canvas.bind("<B1-Motion>", self.on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_release)
 
         toolbar = tk.Frame(self, bg="#202020")
         toolbar.pack(side="bottom", fill="x")
+        for label, tool in [
+            ("Pen", "pen"),
+            ("Rect", "rect"),
+            ("Ellipse", "ellipse"),
+            ("Arrow", "arrow"),
+            ("Text", "text"),
+        ]:
+            tk.Radiobutton(
+                toolbar,
+                text=label,
+                value=tool,
+                variable=self.tool,
+                indicatoron=False,
+                width=7,
+                bg="#303030",
+                fg="#ffffff",
+                selectcolor="#155e75",
+            ).pack(side="left", padx=(4, 0), pady=4)
+        tk.Entry(toolbar, textvariable=self.text_value, width=14).pack(side="left", padx=6, pady=4)
+        for color in ["#ff2d2d", "#ffd400", "#2dd4bf", "#ffffff", "#111111"]:
+            tk.Button(
+                toolbar,
+                width=2,
+                bg=color,
+                activebackground=color,
+                command=lambda value=color: self.color.set(value),
+            ).pack(side="left", padx=(0, 3), pady=4)
+        tk.Button(toolbar, text="-", width=3, command=self.decrease_width).pack(side="left", padx=(4, 0), pady=4)
+        tk.Button(toolbar, text="+", width=3, command=self.increase_width).pack(side="left", padx=(0, 6), pady=4)
+        tk.Button(toolbar, text="Undo", command=self.undo).pack(side="left", padx=4, pady=4)
         tk.Button(toolbar, text="Copy", command=self.copy_again).pack(side="left", padx=4, pady=4)
         tk.Button(toolbar, text="Save As", command=self.save_as).pack(side="left", padx=4, pady=4)
         tk.Button(toolbar, text="Close", command=self.destroy).pack(side="right", padx=4, pady=4)
 
         self.bind_drag(self)
-        self.bind_drag(self.image_label)
+        self.bind("<Control-z>", lambda _event: self.undo())
 
     def bind_drag(self, widget: tk.Widget) -> None:
         widget.bind("<ButtonPress-1>", self.start_drag)
@@ -321,9 +371,167 @@ class PinWindow(tk.Toplevel):
         dx, dy = self.drag_offset
         self.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
 
+    def canvas_to_image(self, x: float, y: float) -> tuple[float, float]:
+        return x / self.scale, y / self.scale
+
+    def image_to_canvas(self, x: float, y: float) -> tuple[float, float]:
+        return x * self.scale, y * self.scale
+
+    def scaled_width(self, width: int | None = None) -> int:
+        return max(1, round((width or self.stroke_width.get()) * self.scale))
+
+    def on_press(self, event: tk.Event) -> None:
+        self.drag_offset = None
+        tool = self.tool.get()
+        color = self.color.get()
+        width = self.stroke_width.get()
+        x, y = self.canvas_to_image(event.x, event.y)
+        if tool == "text":
+            text = self.text_value.get().strip() or "Text"
+            item = {"type": "text", "x": x, "y": y, "text": text, "color": color, "width": width}
+            self.items.append(item)
+            self.draw_item(item)
+            return
+        self.active_data = {"type": tool, "x0": x, "y0": y, "x1": x, "y1": y, "color": color, "width": width}
+        if tool == "pen":
+            self.pen_points = [(x, y)]
+            self.active_data["points"] = self.pen_points
+            self.active_canvas_item = self.canvas.create_line(
+                event.x,
+                event.y,
+                event.x,
+                event.y,
+                fill=color,
+                width=self.scaled_width(width),
+                capstyle="round",
+                smooth=True,
+            )
+        else:
+            self.active_canvas_item = self.draw_item(self.active_data, temporary=True)
+
+    def on_drag(self, event: tk.Event) -> None:
+        if not self.active_data or not self.active_canvas_item:
+            return
+        tool = self.active_data["type"]
+        x, y = self.canvas_to_image(event.x, event.y)
+        self.active_data["x1"] = x
+        self.active_data["y1"] = y
+        if tool == "pen":
+            self.pen_points.append((x, y))
+            coords: list[float] = []
+            for px, py in self.pen_points:
+                cx, cy = self.image_to_canvas(px, py)
+                coords.extend([cx, cy])
+            self.canvas.coords(self.active_canvas_item, *coords)
+        else:
+            x0, y0 = self.image_to_canvas(self.active_data["x0"], self.active_data["y0"])
+            x1, y1 = self.image_to_canvas(x, y)
+            self.canvas.coords(self.active_canvas_item, x0, y0, x1, y1)
+
+    def on_release(self, _event: tk.Event) -> None:
+        if self.active_data:
+            self.items.append(self.active_data)
+        self.active_data = None
+        self.active_canvas_item = None
+        self.pen_points = []
+
+    def draw_item(self, item: dict, temporary: bool = False) -> int:
+        item_type = item["type"]
+        color = item.get("color", "#ff2d2d")
+        width = self.scaled_width(item.get("width"))
+        if item_type == "text":
+            x, y = self.image_to_canvas(item["x"], item["y"])
+            return self.canvas.create_text(
+                x,
+                y,
+                text=item["text"],
+                fill=color,
+                anchor="nw",
+                font=("Segoe UI", max(10, round(22 * self.scale)), "bold"),
+            )
+        x0, y0 = self.image_to_canvas(item["x0"], item["y0"])
+        x1, y1 = self.image_to_canvas(item["x1"], item["y1"])
+        if item_type == "rect":
+            return self.canvas.create_rectangle(x0, y0, x1, y1, outline=color, width=width)
+        if item_type == "ellipse":
+            return self.canvas.create_oval(x0, y0, x1, y1, outline=color, width=width)
+        if item_type == "arrow":
+            return self.canvas.create_line(x0, y0, x1, y1, fill=color, width=width, arrow="last")
+        if item_type == "pen":
+            coords: list[float] = []
+            for px, py in item.get("points", []):
+                cx, cy = self.image_to_canvas(px, py)
+                coords.extend([cx, cy])
+            if len(coords) < 4:
+                coords = [x0, y0, x1 + 1, y1 + 1]
+            return self.canvas.create_line(*coords, fill=color, width=width, capstyle="round", smooth=True)
+        raise ValueError(f"Unknown item type: {item_type}")
+
+    def undo(self) -> None:
+        if not self.items:
+            return
+        self.items.pop()
+        self.redraw_canvas()
+
+    def redraw_canvas(self) -> None:
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, image=self.photo, anchor="nw")
+        for item in self.items:
+            self.draw_item(item)
+
+    def increase_width(self) -> None:
+        self.stroke_width.set(min(12, self.stroke_width.get() + 1))
+
+    def decrease_width(self) -> None:
+        self.stroke_width.set(max(1, self.stroke_width.get() - 1))
+
+    def render_image(self) -> Image.Image:
+        rendered = self.image.copy().convert("RGB")
+        draw = ImageDraw.Draw(rendered)
+        for item in self.items:
+            color = item.get("color", "#ff2d2d")
+            width = int(item.get("width", 3))
+            if item["type"] == "rect":
+                draw.rectangle((item["x0"], item["y0"], item["x1"], item["y1"]), outline=color, width=width)
+            elif item["type"] == "ellipse":
+                draw.ellipse((item["x0"], item["y0"], item["x1"], item["y1"]), outline=color, width=width)
+            elif item["type"] == "arrow":
+                draw.line((item["x0"], item["y0"], item["x1"], item["y1"]), fill=color, width=width)
+                self.draw_arrow_head(draw, item, color, width)
+            elif item["type"] == "pen":
+                points = item.get("points", [])
+                if len(points) > 1:
+                    draw.line(points, fill=color, width=width, joint="curve")
+            elif item["type"] == "text":
+                font = self.get_font(max(12, width * 8))
+                draw.text((item["x"], item["y"]), item["text"], fill=color, font=font)
+        return rendered
+
+    def draw_arrow_head(self, draw: ImageDraw.ImageDraw, item: dict, color: str, width: int) -> None:
+        import math
+
+        x0, y0, x1, y1 = item["x0"], item["y0"], item["x1"], item["y1"]
+        angle = math.atan2(y1 - y0, x1 - x0)
+        length = max(12, width * 5)
+        spread = math.pi / 7
+        points = [(x1, y1)]
+        for sign in (1, -1):
+            px = x1 - length * math.cos(angle - sign * spread)
+            py = y1 - length * math.sin(angle - sign * spread)
+            points.append((px, py))
+        draw.polygon(points, fill=color)
+
+    def get_font(self, size: int) -> ImageFont.ImageFont:
+        for name in ("msyh.ttc", "simhei.ttf", "arial.ttf"):
+            try:
+                return ImageFont.truetype(name, size=size)
+            except OSError:
+                continue
+        return ImageFont.load_default()
+
     def copy_again(self) -> None:
         try:
-            copy_image_to_clipboard(self.image)
+            copy_image_to_clipboard(self.render_image())
         except OSError as exc:
             messagebox.showerror(APP_NAME, f"Copy failed: {exc}")
 
@@ -335,7 +543,7 @@ class PinWindow(tk.Toplevel):
             filetypes=[("PNG image", "*.png"), ("All files", "*.*")],
         )
         if target:
-            self.image.save(target)
+            self.render_image().save(target)
 
 
 class PolySnipperApp:
@@ -369,7 +577,7 @@ class PolySnipperApp:
         ).pack(pady=(14, 4))
         tk.Label(
             self.root,
-            text="Alt + A to capture. Selection is copied, saved, and pinned.",
+            text="Alt + A to capture. Edit, copy, save, or keep the result on top.",
             font=("Segoe UI", 9),
             bg="#f4f4f4",
             wraplength=280,
@@ -449,7 +657,7 @@ class PolySnipperApp:
             copy_image_to_clipboard(image)
         except OSError as exc:
             messagebox.showerror(APP_NAME, f"Copy failed: {exc}")
-        PinWindow(self, image, path)
+        EditorWindow(self, image, path)
 
     def open_folder(self) -> None:
         import os
