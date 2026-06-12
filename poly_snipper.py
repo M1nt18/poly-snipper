@@ -284,7 +284,6 @@ class EditorWindow(tk.Toplevel):
         self.app = app
         self.image = image
         self.path = path
-        self.drag_offset: tuple[int, int] | None = None
         self.tool = tk.StringVar(value="pen")
         self.color = tk.StringVar(value="#ff2d2d")
         self.stroke_width = tk.IntVar(value=3)
@@ -355,21 +354,7 @@ class EditorWindow(tk.Toplevel):
         tk.Button(toolbar, text="Save As", command=self.save_as).pack(side="left", padx=4, pady=4)
         tk.Button(toolbar, text="Close", command=self.destroy).pack(side="right", padx=4, pady=4)
 
-        self.bind_drag(self)
         self.bind("<Control-z>", lambda _event: self.undo())
-
-    def bind_drag(self, widget: tk.Widget) -> None:
-        widget.bind("<ButtonPress-1>", self.start_drag)
-        widget.bind("<B1-Motion>", self.drag)
-
-    def start_drag(self, event: tk.Event) -> None:
-        self.drag_offset = (event.x_root - self.winfo_x(), event.y_root - self.winfo_y())
-
-    def drag(self, event: tk.Event) -> None:
-        if not self.drag_offset:
-            return
-        dx, dy = self.drag_offset
-        self.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
 
     def canvas_to_image(self, x: float, y: float) -> tuple[float, float]:
         return x / self.scale, y / self.scale
@@ -381,7 +366,6 @@ class EditorWindow(tk.Toplevel):
         return max(1, round((width or self.stroke_width.get()) * self.scale))
 
     def on_press(self, event: tk.Event) -> None:
-        self.drag_offset = None
         tool = self.tool.get()
         color = self.color.get()
         width = self.stroke_width.get()
@@ -391,7 +375,7 @@ class EditorWindow(tk.Toplevel):
             item = {"type": "text", "x": x, "y": y, "text": text, "color": color, "width": width}
             self.items.append(item)
             self.draw_item(item)
-            return
+            return "break"
         self.active_data = {"type": tool, "x0": x, "y0": y, "x1": x, "y1": y, "color": color, "width": width}
         if tool == "pen":
             self.pen_points = [(x, y)]
@@ -408,10 +392,11 @@ class EditorWindow(tk.Toplevel):
             )
         else:
             self.active_canvas_item = self.draw_item(self.active_data, temporary=True)
+        return "break"
 
     def on_drag(self, event: tk.Event) -> None:
         if not self.active_data or not self.active_canvas_item:
-            return
+            return "break"
         tool = self.active_data["type"]
         x, y = self.canvas_to_image(event.x, event.y)
         self.active_data["x1"] = x
@@ -427,6 +412,7 @@ class EditorWindow(tk.Toplevel):
             x0, y0 = self.image_to_canvas(self.active_data["x0"], self.active_data["y0"])
             x1, y1 = self.image_to_canvas(x, y)
             self.canvas.coords(self.active_canvas_item, x0, y0, x1, y1)
+        return "break"
 
     def on_release(self, _event: tk.Event) -> None:
         if self.active_data:
@@ -434,6 +420,7 @@ class EditorWindow(tk.Toplevel):
         self.active_data = None
         self.active_canvas_item = None
         self.pen_points = []
+        return "break"
 
     def draw_item(self, item: dict, temporary: bool = False) -> int:
         item_type = item["type"]
