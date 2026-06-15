@@ -2,7 +2,7 @@
 """A small Windows screenshot tool inspired by Snipaste.
 
 Hotkey: Alt+A
-Features: region capture, copy image to clipboard, auto-save PNG, pin image.
+Features: region capture, copy image to clipboard, auto-save PNG, annotation editor.
 """
 
 from __future__ import annotations
@@ -10,9 +10,15 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 import io
+import json
+import os
 import queue
+import subprocess
 import sys
+import tempfile
 import threading
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +34,9 @@ except ImportError:  # The script still works without tray support during develo
 
 
 APP_NAME = "Poly Snipper"
+APP_VERSION = "0.1.3"
+RELEASES_API = "https://api.github.com/repos/M1nt18/poly-snipper/releases/latest"
+LATEST_INSTALLER_URL = "https://github.com/M1nt18/poly-snipper/releases/latest/download/PolySnipperSetup.exe"
 HOTKEY_ID = 0x504F4C59
 MOD_ALT = 0x0001
 VK_A = 0x41
@@ -97,6 +106,21 @@ def save_capture(image: Image.Image) -> Path:
     path = screenshots_dir() / f"snip-{stamp}.png"
     image.save(path)
     return path
+
+
+def parse_version(value: str) -> tuple[int, ...]:
+    clean = value.strip().lstrip("vV")
+    parts: list[int] = []
+    for part in clean.split("."):
+        digits = "".join(ch for ch in part if ch.isdigit())
+        parts.append(int(digits or "0"))
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts)
+
+
+def is_newer_version(latest: str, current: str) -> bool:
+    return parse_version(latest) > parse_version(current)
 
 
 def copy_image_to_clipboard(image: Image.Image) -> None:
@@ -199,7 +223,7 @@ class CaptureOverlay(tk.Toplevel):
         self.help_id = self.canvas.create_text(
             16,
             16,
-            text="Drag to select, Esc to cancel",
+            text="拖动选择区域，Esc 取消",
             fill="#ffffff",
             anchor="nw",
             font=("Segoe UI", 13),
@@ -287,7 +311,7 @@ class EditorWindow(tk.Toplevel):
         self.tool = tk.StringVar(value="pen")
         self.color = tk.StringVar(value="#ff2d2d")
         self.stroke_width = tk.IntVar(value=3)
-        self.text_value = tk.StringVar(value="Text")
+        self.text_value = tk.StringVar(value="文字")
         self.items: list[dict] = []
         self.active_canvas_item: int | None = None
         self.active_data: dict | None = None
@@ -321,11 +345,11 @@ class EditorWindow(tk.Toplevel):
         toolbar = tk.Frame(self, bg="#202020")
         toolbar.pack(side="bottom", fill="x")
         for label, tool in [
-            ("Pen", "pen"),
-            ("Rect", "rect"),
-            ("Ellipse", "ellipse"),
-            ("Arrow", "arrow"),
-            ("Text", "text"),
+            ("✎", "pen"),
+            ("□", "rect"),
+            ("○", "ellipse"),
+            ("↗", "arrow"),
+            ("字", "text"),
         ]:
             tk.Radiobutton(
                 toolbar,
@@ -333,10 +357,11 @@ class EditorWindow(tk.Toplevel):
                 value=tool,
                 variable=self.tool,
                 indicatoron=False,
-                width=7,
+                width=4,
                 bg="#303030",
                 fg="#ffffff",
                 selectcolor="#155e75",
+                font=("Segoe UI", 12, "bold"),
             ).pack(side="left", padx=(4, 0), pady=4)
         tk.Entry(toolbar, textvariable=self.text_value, width=14).pack(side="left", padx=6, pady=4)
         for color in ["#ff2d2d", "#ffd400", "#2dd4bf", "#ffffff", "#111111"]:
@@ -349,10 +374,10 @@ class EditorWindow(tk.Toplevel):
             ).pack(side="left", padx=(0, 3), pady=4)
         tk.Button(toolbar, text="-", width=3, command=self.decrease_width).pack(side="left", padx=(4, 0), pady=4)
         tk.Button(toolbar, text="+", width=3, command=self.increase_width).pack(side="left", padx=(0, 6), pady=4)
-        tk.Button(toolbar, text="Undo", command=self.undo).pack(side="left", padx=4, pady=4)
-        tk.Button(toolbar, text="Copy", command=self.copy_again).pack(side="left", padx=4, pady=4)
-        tk.Button(toolbar, text="Save As", command=self.save_as).pack(side="left", padx=4, pady=4)
-        tk.Button(toolbar, text="Close", command=self.destroy).pack(side="right", padx=4, pady=4)
+        tk.Button(toolbar, text="撤销", command=self.undo).pack(side="left", padx=4, pady=4)
+        tk.Button(toolbar, text="复制", command=self.copy_again).pack(side="left", padx=4, pady=4)
+        tk.Button(toolbar, text="另存为", command=self.save_as).pack(side="left", padx=4, pady=4)
+        tk.Button(toolbar, text="关闭", command=self.destroy).pack(side="right", padx=4, pady=4)
 
         self.bind("<Control-z>", lambda _event: self.undo())
 
@@ -371,7 +396,7 @@ class EditorWindow(tk.Toplevel):
         width = self.stroke_width.get()
         x, y = self.canvas_to_image(event.x, event.y)
         if tool == "text":
-            text = self.text_value.get().strip() or "Text"
+            text = self.text_value.get().strip() or "文字"
             item = {"type": "text", "x": x, "y": y, "text": text, "color": color, "width": width}
             self.items.append(item)
             self.draw_item(item)
@@ -520,7 +545,7 @@ class EditorWindow(tk.Toplevel):
         try:
             copy_image_to_clipboard(self.render_image())
         except OSError as exc:
-            messagebox.showerror(APP_NAME, f"Copy failed: {exc}")
+            messagebox.showerror(APP_NAME, f"复制失败：{exc}")
 
     def save_as(self) -> None:
         target = filedialog.asksaveasfilename(
@@ -558,25 +583,30 @@ class PolySnipperApp:
         self.root.configure(bg="#f4f4f4")
         tk.Label(
             self.root,
-            text=APP_NAME,
+            text=f"{APP_NAME} {APP_VERSION}",
             font=("Segoe UI", 15, "bold"),
             bg="#f4f4f4",
         ).pack(pady=(14, 4))
         tk.Label(
             self.root,
-            text="Alt + A to capture. Edit, copy, save, or keep the result on top.",
+            text="Alt + A 截图。截图后可标注、复制、保存，并保持窗口置顶。",
             font=("Segoe UI", 9),
             bg="#f4f4f4",
             wraplength=280,
         ).pack(pady=(0, 10))
         row = tk.Frame(self.root, bg="#f4f4f4")
         row.pack()
-        tk.Button(row, text="Capture", width=10, command=self.start_capture).pack(side="left", padx=5)
-        tk.Button(row, text="Folder", width=10, command=self.open_folder).pack(side="left", padx=5)
-        tk.Button(row, text="Quit", width=10, command=self.quit).pack(side="left", padx=5)
+        tk.Button(row, text="截图", width=10, command=self.start_capture).pack(side="left", padx=5)
+        tk.Button(row, text="目录", width=10, command=self.open_folder).pack(side="left", padx=5)
+        tk.Button(row, text="退出", width=10, command=self.quit).pack(side="left", padx=5)
+        tk.Button(
+            self.root,
+            text="检查更新",
+            command=lambda: self.check_for_updates(manual=True),
+        ).pack(pady=(10, 0))
         tk.Label(
             self.root,
-            text=f"Saved to {screenshots_dir()}",
+            text=f"保存目录：{screenshots_dir()}",
             font=("Segoe UI", 8),
             bg="#f4f4f4",
             fg="#555555",
@@ -592,17 +622,18 @@ class PolySnipperApp:
             if event == "capture":
                 self.start_capture()
             elif event == "hotkey_failed":
-                messagebox.showwarning(APP_NAME, "Alt+A hotkey is already in use.")
+                messagebox.showwarning(APP_NAME, "Alt + A 快捷键已被占用。")
         self.root.after(100, self.poll_events)
 
     def start_tray(self) -> None:
         if pystray is None:
             return
         menu = pystray.Menu(
-            pystray.MenuItem("Capture", lambda _icon, _item: self.root.after(0, self.start_capture)),
-            pystray.MenuItem("Show", lambda _icon, _item: self.root.after(0, self.show)),
-            pystray.MenuItem("Open Folder", lambda _icon, _item: self.root.after(0, self.open_folder)),
-            pystray.MenuItem("Quit", lambda _icon, _item: self.root.after(0, self.quit)),
+            pystray.MenuItem("截图", lambda _icon, _item: self.root.after(0, self.start_capture)),
+            pystray.MenuItem("显示", lambda _icon, _item: self.root.after(0, self.show)),
+            pystray.MenuItem("打开目录", lambda _icon, _item: self.root.after(0, self.open_folder)),
+            pystray.MenuItem("检查更新", lambda _icon, _item: self.root.after(0, lambda: self.check_for_updates(manual=True))),
+            pystray.MenuItem("退出", lambda _icon, _item: self.root.after(0, self.quit)),
         )
         self.tray_icon = pystray.Icon(APP_NAME, self.make_tray_image(), APP_NAME, menu)
         self.tray_thread = threading.Thread(target=self.tray_icon.run, daemon=True)
@@ -643,13 +674,69 @@ class PolySnipperApp:
         try:
             copy_image_to_clipboard(image)
         except OSError as exc:
-            messagebox.showerror(APP_NAME, f"Copy failed: {exc}")
+            messagebox.showerror(APP_NAME, f"复制失败：{exc}")
         EditorWindow(self, image, path)
 
     def open_folder(self) -> None:
         import os
 
         os.startfile(screenshots_dir())
+
+    def check_for_updates(self, manual: bool = False) -> None:
+        if manual:
+            self.show()
+            messagebox.showinfo(APP_NAME, "正在检查 GitHub 最新版本...", parent=self.root)
+        threading.Thread(target=self._check_for_updates_worker, args=(manual,), daemon=True).start()
+
+    def _check_for_updates_worker(self, manual: bool) -> None:
+        try:
+            req = urllib.request.Request(RELEASES_API, headers={"User-Agent": f"PolySnipper/{APP_VERSION}"})
+            with urllib.request.urlopen(req, timeout=20) as response:
+                release = json.loads(response.read().decode("utf-8"))
+            latest_tag = release.get("tag_name", "")
+            if not latest_tag:
+                raise RuntimeError("GitHub 没有返回最新版本号。")
+            if not is_newer_version(latest_tag, APP_VERSION):
+                if manual:
+                    self.root.after(0, lambda: messagebox.showinfo(APP_NAME, f"已是最新版本。当前版本：{APP_VERSION}", parent=self.root))
+                return
+            installer_url = self.find_installer_asset(release) or LATEST_INSTALLER_URL
+            self.root.after(0, lambda: self.prompt_update(latest_tag, installer_url))
+        except Exception as exc:
+            if manual:
+                self.root.after(0, lambda: messagebox.showerror(APP_NAME, f"检查更新失败：\n{exc}", parent=self.root))
+
+    def find_installer_asset(self, release: dict) -> str | None:
+        for asset in release.get("assets", []):
+            if asset.get("name") == "PolySnipperSetup.exe":
+                return asset.get("browser_download_url")
+        return None
+
+    def prompt_update(self, latest_tag: str, installer_url: str) -> None:
+        self.show()
+        ok = messagebox.askyesno(
+            APP_NAME,
+            f"发现新版本 {latest_tag.lstrip('vV')}。\n\n现在下载并安装吗？",
+            parent=self.root,
+        )
+        if ok:
+            threading.Thread(target=self._download_and_install_update, args=(latest_tag, installer_url), daemon=True).start()
+
+    def _download_and_install_update(self, latest_tag: str, installer_url: str) -> None:
+        try:
+            target = Path(tempfile.gettempdir()) / f"PolySnipperSetup-{latest_tag.lstrip('vV')}.exe"
+            req = urllib.request.Request(installer_url, headers={"User-Agent": f"PolySnipper/{APP_VERSION}"})
+            with urllib.request.urlopen(req, timeout=120) as response:
+                data = response.read()
+            target.write_bytes(data)
+            self.root.after(0, lambda: self.launch_update_installer(target))
+        except Exception as exc:
+            self.root.after(0, lambda: messagebox.showerror(APP_NAME, f"更新下载失败：\n{exc}", parent=self.root))
+
+    def launch_update_installer(self, installer_path: Path) -> None:
+        messagebox.showinfo(APP_NAME, "即将启动安装器。安装时 Poly Snipper 会自动关闭。", parent=self.root)
+        subprocess.Popen([str(installer_path)])
+        self.quit()
 
     def quit(self) -> None:
         if self.tray_icon is not None:
@@ -664,7 +751,7 @@ class PolySnipperApp:
 
 def main() -> int:
     if sys.platform != "win32":
-        print(f"{APP_NAME} currently supports Windows only.", file=sys.stderr)
+        print(f"{APP_NAME} 当前仅支持 Windows。", file=sys.stderr)
         return 1
     PolySnipperApp().run()
     return 0

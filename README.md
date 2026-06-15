@@ -1,44 +1,45 @@
-# Poly Snipper
+# Poly Snipper 截图工具
 
-A small Windows screenshot tool inspired by Snipaste, built for local personal use.
+一个自用的 Windows 截图工具，支持全局快捷键、托盘运行、截图后标注、复制、保存和在线更新。
 
-## Run
+## 使用
 
-Double-click `run_poly_snipper_silent.vbs` for normal use. Use `run_poly_snipper.bat` when you want to see console errors.
+推荐安装 `PolySnipperSetup.exe`。安装时勾选开机启动后，程序会随 Windows 自动启动，并常驻托盘。
 
-You can also run:
+源码方式运行：
 
 ```powershell
 python poly_snipper.py
 ```
 
-## Controls
+## 操作
 
-- `Alt + A`: start region capture
-- Drag: select a region
-- `Esc`: cancel capture
-- After capture: image is copied to clipboard, saved as PNG, and opened in a topmost editor window
-- Editor tools: pen, rectangle, ellipse, arrow, text, color swatches, line width, undo
-- `Copy`: copy the edited image
-- `Save As`: save the edited image
+- `Alt + A`：开始区域截图
+- 鼠标拖动：选择截图区域
+- `Esc`：取消截图
+- 截图后：自动复制到剪贴板、保存 PNG，并打开置顶编辑窗口
+- 编辑工具：画笔、矩形、圆圈、箭头、文字、颜色、线宽、撤销
+- `复制`：复制编辑后的图片
+- `另存为`：保存编辑后的图片
+- `检查更新`：从 GitHub Releases 下载并运行最新版安装器
 
-Screenshots are saved to:
+截图默认保存到：
 
 ```text
 %USERPROFILE%\Pictures\PolySnips
 ```
 
-## Notes
+## 说明
 
-This MVP uses Python, Tkinter, Pillow, and Win32 APIs via `ctypes`. It does not need a .NET SDK or extra package installs on this machine.
+程序使用 Python、Tkinter、Pillow 和 Win32 API，不需要 .NET SDK。
 
-## Build EXE and Installer
+## 打包 EXE 和安装器
 
 ```powershell
 .\build_installer.ps1
 ```
 
-The installer writes this current-user startup entry when the startup task is selected:
+勾选开机启动时，安装器会写入当前用户的启动项：
 
 ```text
 HKCU\Software\Microsoft\Windows\CurrentVersion\Run\PolySnipper

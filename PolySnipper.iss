@@ -1,5 +1,5 @@
 #define MyAppName "Poly Snipper"
-#define MyAppVersion "0.1.2"
+#define MyAppVersion "0.1.3"
 #define MyAppPublisher "POLY"
 #define MyAppExeName "PolySnipper.exe"
 
@@ -24,7 +24,7 @@ CloseApplications=yes
 RestartApplications=no
 
 [Tasks]
-Name: "startup"; Description: "Start Poly Snipper when Windows starts"; GroupDescription: "Startup:"; Flags: checkedonce
+Name: "startup"; Description: "Windows 开机时启动 Poly Snipper"; GroupDescription: "启动选项："; Flags: checkedonce
 
 [Files]
 Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
@@ -32,7 +32,7 @@ Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
+Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "PolySnipper"; ValueData: """{app}\{#MyAppExeName}"" --startup"; Flags: uninsdeletevalue; Tasks: startup
