@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox
+from typing import Callable
 
 from PIL import Image, ImageDraw, ImageFont, ImageGrab, ImageTk
 
@@ -34,7 +35,7 @@ except ImportError:  # The script still works without tray support during develo
 
 
 APP_NAME = "Poly Snipper"
-APP_VERSION = "0.1.3"
+APP_VERSION = "0.1.4"
 RELEASES_API = "https://api.github.com/repos/M1nt18/poly-snipper/releases/latest"
 LATEST_INSTALLER_URL = "https://github.com/M1nt18/poly-snipper/releases/latest/download/PolySnipperSetup.exe"
 HOTKEY_ID = 0x504F4C59
@@ -564,9 +565,10 @@ class PolySnipperApp:
         self.start_hidden = "--startup" in sys.argv or "--hidden" in sys.argv
         self.tray_icon = None
         self.tray_thread: threading.Thread | None = None
+        self.update_in_progress = False
         self.root = tk.Tk()
         self.root.title(APP_NAME)
-        self.root.geometry("320x170")
+        self.root.geometry("360x176")
         self.root.resizable(False, False)
 
         self.listener = HotkeyListener(self.events)
@@ -581,6 +583,7 @@ class PolySnipperApp:
 
     def build_control_window(self) -> None:
         self.root.configure(bg="#f4f4f4")
+        self.status_text = tk.StringVar(value="就绪")
         tk.Label(
             self.root,
             text=f"{APP_NAME} {APP_VERSION}",
@@ -596,14 +599,10 @@ class PolySnipperApp:
         ).pack(pady=(0, 10))
         row = tk.Frame(self.root, bg="#f4f4f4")
         row.pack()
-        tk.Button(row, text="截图", width=10, command=self.start_capture).pack(side="left", padx=5)
-        tk.Button(row, text="目录", width=10, command=self.open_folder).pack(side="left", padx=5)
-        tk.Button(row, text="退出", width=10, command=self.quit).pack(side="left", padx=5)
-        tk.Button(
-            self.root,
-            text="检查更新",
-            command=lambda: self.check_for_updates(manual=True),
-        ).pack(pady=(10, 0))
+        self.capture_button = self.make_control_button(row, "截图", self.start_capture)
+        self.folder_button = self.make_control_button(row, "目录", self.open_folder)
+        self.update_button = self.make_control_button(row, "↻ 更新", lambda: self.check_for_updates(manual=True), accent=True)
+        self.quit_button = self.make_control_button(row, "退出", self.quit)
         tk.Label(
             self.root,
             text=f"保存目录：{screenshots_dir()}",
@@ -611,7 +610,43 @@ class PolySnipperApp:
             bg="#f4f4f4",
             fg="#555555",
             wraplength=290,
-        ).pack(pady=(14, 0))
+        ).pack(pady=(12, 0))
+        tk.Label(
+            self.root,
+            textvariable=self.status_text,
+            font=("Segoe UI", 8),
+            bg="#f4f4f4",
+            fg="#0f766e",
+            wraplength=320,
+        ).pack(pady=(4, 0))
+
+    def make_control_button(
+        self,
+        parent: tk.Widget,
+        text: str,
+        command: Callable[[], None],
+        accent: bool = False,
+    ) -> tk.Button:
+        button = tk.Button(
+            parent,
+            text=text,
+            width=7,
+            command=command,
+            relief="flat",
+            bd=0,
+            bg="#0f766e" if accent else "#ffffff",
+            fg="#ffffff" if accent else "#111827",
+            activebackground="#115e59" if accent else "#e5e7eb",
+            activeforeground="#ffffff" if accent else "#111827",
+            font=("Segoe UI", 9, "bold" if accent else "normal"),
+            cursor="hand2",
+            highlightthickness=1,
+            highlightbackground="#cbd5e1",
+            padx=6,
+            pady=5,
+        )
+        button.pack(side="left", padx=4)
+        return button
 
     def poll_events(self) -> None:
         while True:
@@ -683,9 +718,15 @@ class PolySnipperApp:
         os.startfile(screenshots_dir())
 
     def check_for_updates(self, manual: bool = False) -> None:
+        if self.update_in_progress:
+            if manual:
+                self.status_text.set("正在检查，请稍等...")
+            return
+        self.update_in_progress = True
+        self.status_text.set("正在检查最新版本...")
+        self.update_button.configure(state="disabled", text="检查中")
         if manual:
             self.show()
-            messagebox.showinfo(APP_NAME, "正在检查 GitHub 最新版本...", parent=self.root)
         threading.Thread(target=self._check_for_updates_worker, args=(manual,), daemon=True).start()
 
     def _check_for_updates_worker(self, manual: bool) -> None:
@@ -699,12 +740,20 @@ class PolySnipperApp:
             if not is_newer_version(latest_tag, APP_VERSION):
                 if manual:
                     self.root.after(0, lambda: messagebox.showinfo(APP_NAME, f"已是最新版本。当前版本：{APP_VERSION}", parent=self.root))
+                self.root.after(0, lambda: self.status_text.set(f"已是最新版本：{APP_VERSION}"))
                 return
             installer_url = self.find_installer_asset(release) or LATEST_INSTALLER_URL
             self.root.after(0, lambda: self.prompt_update(latest_tag, installer_url))
         except Exception as exc:
+            self.root.after(0, lambda: self.status_text.set("检查更新失败"))
             if manual:
                 self.root.after(0, lambda: messagebox.showerror(APP_NAME, f"检查更新失败：\n{exc}", parent=self.root))
+        finally:
+            self.root.after(0, self.finish_update_check)
+
+    def finish_update_check(self) -> None:
+        self.update_in_progress = False
+        self.update_button.configure(state="normal", text="↻ 更新")
 
     def find_installer_asset(self, release: dict) -> str | None:
         for asset in release.get("assets", []):
@@ -714,6 +763,7 @@ class PolySnipperApp:
 
     def prompt_update(self, latest_tag: str, installer_url: str) -> None:
         self.show()
+        self.status_text.set(f"发现新版本：{latest_tag.lstrip('vV')}")
         ok = messagebox.askyesno(
             APP_NAME,
             f"发现新版本 {latest_tag.lstrip('vV')}。\n\n现在下载并安装吗？",
@@ -724,6 +774,7 @@ class PolySnipperApp:
 
     def _download_and_install_update(self, latest_tag: str, installer_url: str) -> None:
         try:
+            self.root.after(0, lambda: self.status_text.set("正在下载更新..."))
             target = Path(tempfile.gettempdir()) / f"PolySnipperSetup-{latest_tag.lstrip('vV')}.exe"
             req = urllib.request.Request(installer_url, headers={"User-Agent": f"PolySnipper/{APP_VERSION}"})
             with urllib.request.urlopen(req, timeout=120) as response:
