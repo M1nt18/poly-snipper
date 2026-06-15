@@ -35,7 +35,7 @@ except ImportError:  # The script still works without tray support during develo
 
 
 APP_NAME = "Poly Snipper"
-APP_VERSION = "0.1.5"
+APP_VERSION = "0.1.6"
 RELEASES_API = "https://api.github.com/repos/M1nt18/poly-snipper/releases/latest"
 LATEST_INSTALLER_URL = "https://github.com/M1nt18/poly-snipper/releases/latest/download/PolySnipperSetup.exe"
 HOTKEY_ID = 0x504F4C59
@@ -299,12 +299,19 @@ class CaptureOverlay(tk.Toplevel):
             self.cancel()
             return
         crop = self.image.crop((left, top, right, bottom))
+        origin = (self.screen.left + left, self.screen.top + top)
         self.destroy()
-        self.app.finish_capture(crop)
+        self.app.finish_capture(crop, origin)
 
 
 class EditorWindow(tk.Toplevel):
-    def __init__(self, app: "PolySnipperApp", image: Image.Image, path: Path) -> None:
+    def __init__(
+        self,
+        app: "PolySnipperApp",
+        image: Image.Image,
+        path: Path,
+        origin: tuple[int, int] | None = None,
+    ) -> None:
         super().__init__(app.root)
         self.app = app
         self.image = image
@@ -349,12 +356,12 @@ class EditorWindow(tk.Toplevel):
         toolbar = tk.Frame(self, bg="#202020")
         toolbar.pack(side="bottom", fill="x")
         for label, tool in [
-            ("✥", "move"),
-            ("✎", "pen"),
-            ("□", "rect"),
-            ("○", "ellipse"),
-            ("↗", "arrow"),
-            ("字", "text"),
+            ("移动", "move"),
+            ("画笔", "pen"),
+            ("矩形", "rect"),
+            ("圆圈", "ellipse"),
+            ("箭头", "arrow"),
+            ("文字", "text"),
         ]:
             tk.Radiobutton(
                 toolbar,
@@ -362,11 +369,12 @@ class EditorWindow(tk.Toplevel):
                 value=tool,
                 variable=self.tool,
                 indicatoron=False,
-                width=4,
+                width=6,
+                height=1,
                 bg="#303030",
                 fg="#ffffff",
                 selectcolor="#155e75",
-                font=("Segoe UI", 12, "bold"),
+                font=("Microsoft YaHei UI", 10, "bold"),
             ).pack(side="left", padx=(4, 0), pady=4)
         self.tool.trace_add("write", lambda *_args: self.on_tool_changed())
         tk.Entry(toolbar, textvariable=self.text_value, width=14).pack(side="left", padx=6, pady=4)
@@ -386,6 +394,21 @@ class EditorWindow(tk.Toplevel):
         tk.Button(toolbar, text="关闭", command=self.destroy).pack(side="right", padx=4, pady=4)
 
         self.bind("<Control-z>", lambda _event: self.undo())
+        if origin is not None:
+            self.position_near_capture(origin)
+
+    def position_near_capture(self, origin: tuple[int, int]) -> None:
+        self.update_idletasks()
+        screen = get_virtual_screen()
+        win_w = max(self.winfo_reqwidth(), self.winfo_width())
+        win_h = max(self.winfo_reqheight(), self.winfo_height())
+        max_x = max(screen.left, screen.left + screen.width - win_w)
+        max_y = max(screen.top, screen.top + screen.height - win_h)
+        x = min(max(origin[0], screen.left), max_x)
+        y = min(max(origin[1], screen.top), max_y)
+        x = max(0, int(x))
+        y = max(0, int(y))
+        self.geometry(f"+{x}+{y}")
 
     def canvas_to_image(self, x: float, y: float) -> tuple[float, float]:
         return x / self.scale, y / self.scale
@@ -841,13 +864,13 @@ class PolySnipperApp:
         image = grab_virtual_screen(screen)
         CaptureOverlay(self, screen, image)
 
-    def finish_capture(self, image: Image.Image) -> None:
+    def finish_capture(self, image: Image.Image, origin: tuple[int, int] | None = None) -> None:
         path = save_capture(image)
         try:
             copy_image_to_clipboard(image)
         except OSError as exc:
             messagebox.showerror(APP_NAME, f"复制失败：{exc}")
-        EditorWindow(self, image, path)
+        EditorWindow(self, image, path, origin)
 
     def open_folder(self) -> None:
         import os
