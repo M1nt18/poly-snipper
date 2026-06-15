@@ -35,7 +35,7 @@ except ImportError:  # The script still works without tray support during develo
 
 
 APP_NAME = "Poly Snipper"
-APP_VERSION = "0.1.4"
+APP_VERSION = "0.1.5"
 RELEASES_API = "https://api.github.com/repos/M1nt18/poly-snipper/releases/latest"
 LATEST_INSTALLER_URL = "https://github.com/M1nt18/poly-snipper/releases/latest/download/PolySnipperSetup.exe"
 HOTKEY_ID = 0x504F4C59
@@ -317,6 +317,9 @@ class EditorWindow(tk.Toplevel):
         self.active_canvas_item: int | None = None
         self.active_data: dict | None = None
         self.pen_points: list[tuple[float, float]] = []
+        self.selected_index: int | None = None
+        self.moving_index: int | None = None
+        self.move_last: tuple[float, float] | None = None
 
         self.title(f"{APP_NAME} - {path.name}")
         self.attributes("-topmost", True)
@@ -346,6 +349,7 @@ class EditorWindow(tk.Toplevel):
         toolbar = tk.Frame(self, bg="#202020")
         toolbar.pack(side="bottom", fill="x")
         for label, tool in [
+            ("✥", "move"),
             ("✎", "pen"),
             ("□", "rect"),
             ("○", "ellipse"),
@@ -364,6 +368,7 @@ class EditorWindow(tk.Toplevel):
                 selectcolor="#155e75",
                 font=("Segoe UI", 12, "bold"),
             ).pack(side="left", padx=(4, 0), pady=4)
+        self.tool.trace_add("write", lambda *_args: self.on_tool_changed())
         tk.Entry(toolbar, textvariable=self.text_value, width=14).pack(side="left", padx=6, pady=4)
         for color in ["#ff2d2d", "#ffd400", "#2dd4bf", "#ffffff", "#111111"]:
             tk.Button(
@@ -391,17 +396,33 @@ class EditorWindow(tk.Toplevel):
     def scaled_width(self, width: int | None = None) -> int:
         return max(1, round((width or self.stroke_width.get()) * self.scale))
 
+    def on_tool_changed(self) -> None:
+        self.canvas.configure(cursor="fleur" if self.tool.get() == "move" else "crosshair")
+        self.active_data = None
+        self.active_canvas_item = None
+        self.moving_index = None
+        self.move_last = None
+
     def on_press(self, event: tk.Event) -> None:
         tool = self.tool.get()
         color = self.color.get()
         width = self.stroke_width.get()
         x, y = self.canvas_to_image(event.x, event.y)
+        if tool == "move":
+            self.selected_index = self.find_item_at(x, y)
+            self.moving_index = self.selected_index
+            self.move_last = (x, y) if self.moving_index is not None else None
+            self.redraw_canvas()
+            return "break"
         if tool == "text":
             text = self.text_value.get().strip() or "文字"
             item = {"type": "text", "x": x, "y": y, "text": text, "color": color, "width": width}
             self.items.append(item)
+            self.selected_index = len(self.items) - 1
             self.draw_item(item)
+            self.draw_selection()
             return "break"
+        self.selected_index = None
         self.active_data = {"type": tool, "x0": x, "y0": y, "x1": x, "y1": y, "color": color, "width": width}
         if tool == "pen":
             self.pen_points = [(x, y)]
@@ -421,6 +442,15 @@ class EditorWindow(tk.Toplevel):
         return "break"
 
     def on_drag(self, event: tk.Event) -> None:
+        if self.tool.get() == "move":
+            if self.moving_index is None or self.move_last is None:
+                return "break"
+            x, y = self.canvas_to_image(event.x, event.y)
+            last_x, last_y = self.move_last
+            self.move_item(self.items[self.moving_index], x - last_x, y - last_y)
+            self.move_last = (x, y)
+            self.redraw_canvas()
+            return "break"
         if not self.active_data or not self.active_canvas_item:
             return "break"
         tool = self.active_data["type"]
@@ -441,11 +471,17 @@ class EditorWindow(tk.Toplevel):
         return "break"
 
     def on_release(self, _event: tk.Event) -> None:
+        if self.tool.get() == "move":
+            self.moving_index = None
+            self.move_last = None
+            return "break"
         if self.active_data:
             self.items.append(self.active_data)
+            self.selected_index = len(self.items) - 1
         self.active_data = None
         self.active_canvas_item = None
         self.pen_points = []
+        self.redraw_canvas()
         return "break"
 
     def draw_item(self, item: dict, temporary: bool = False) -> int:
@@ -491,6 +527,107 @@ class EditorWindow(tk.Toplevel):
         self.canvas.create_image(0, 0, image=self.photo, anchor="nw")
         for item in self.items:
             self.draw_item(item)
+        self.draw_selection()
+
+    def draw_selection(self) -> None:
+        if self.selected_index is None or self.selected_index >= len(self.items):
+            return
+        bbox = self.item_bbox(self.items[self.selected_index])
+        if bbox is None:
+            return
+        x0, y0 = self.image_to_canvas(bbox[0], bbox[1])
+        x1, y1 = self.image_to_canvas(bbox[2], bbox[3])
+        self.canvas.create_rectangle(
+            x0,
+            y0,
+            x1,
+            y1,
+            outline="#38bdf8",
+            dash=(4, 3),
+            width=1,
+        )
+
+    def find_item_at(self, x: float, y: float) -> int | None:
+        for index in range(len(self.items) - 1, -1, -1):
+            if self.hit_item(self.items[index], x, y):
+                return index
+        return None
+
+    def hit_item(self, item: dict, x: float, y: float) -> bool:
+        width = max(6.0, float(item.get("width", 3)) + 5.0)
+        item_type = item["type"]
+        if item_type in {"rect", "ellipse"}:
+            bbox = self.item_bbox(item)
+            if bbox is None:
+                return False
+            x0, y0, x1, y1 = bbox
+            return x0 - width <= x <= x1 + width and y0 - width <= y <= y1 + width
+        if item_type == "arrow":
+            return self.distance_to_segment(x, y, item["x0"], item["y0"], item["x1"], item["y1"]) <= width
+        if item_type == "pen":
+            points = item.get("points", [])
+            if len(points) == 1:
+                px, py = points[0]
+                return abs(px - x) <= width and abs(py - y) <= width
+            return any(
+                self.distance_to_segment(x, y, x0, y0, x1, y1) <= width
+                for (x0, y0), (x1, y1) in zip(points, points[1:])
+            )
+        if item_type == "text":
+            bbox = self.item_bbox(item)
+            if bbox is None:
+                return False
+            x0, y0, x1, y1 = bbox
+            return x0 - width <= x <= x1 + width and y0 - width <= y <= y1 + width
+        return False
+
+    def item_bbox(self, item: dict) -> tuple[float, float, float, float] | None:
+        item_type = item["type"]
+        pad = max(4.0, float(item.get("width", 3)) + 3.0)
+        if item_type in {"rect", "ellipse", "arrow"}:
+            x0, x1 = sorted((float(item["x0"]), float(item["x1"])))
+            y0, y1 = sorted((float(item["y0"]), float(item["y1"])))
+            return x0 - pad, y0 - pad, x1 + pad, y1 + pad
+        if item_type == "pen":
+            points = item.get("points", [])
+            if not points:
+                return None
+            xs = [point[0] for point in points]
+            ys = [point[1] for point in points]
+            return min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad
+        if item_type == "text":
+            text = item.get("text", "")
+            width = max(24.0, len(text) * max(12.0, float(item.get("width", 3)) * 7.0))
+            height = max(18.0, float(item.get("width", 3)) * 9.0)
+            x0 = float(item["x"])
+            y0 = float(item["y"])
+            return x0 - pad, y0 - pad, x0 + width + pad, y0 + height + pad
+        return None
+
+    def distance_to_segment(self, px: float, py: float, x0: float, y0: float, x1: float, y1: float) -> float:
+        import math
+
+        dx = x1 - x0
+        dy = y1 - y0
+        if dx == 0 and dy == 0:
+            return math.hypot(px - x0, py - y0)
+        t = max(0.0, min(1.0, ((px - x0) * dx + (py - y0) * dy) / (dx * dx + dy * dy)))
+        nearest_x = x0 + t * dx
+        nearest_y = y0 + t * dy
+        return math.hypot(px - nearest_x, py - nearest_y)
+
+    def move_item(self, item: dict, dx: float, dy: float) -> None:
+        if item["type"] == "text":
+            item["x"] += dx
+            item["y"] += dy
+            return
+        if item["type"] == "pen":
+            item["points"] = [(x + dx, y + dy) for x, y in item.get("points", [])]
+            return
+        item["x0"] += dx
+        item["y0"] += dy
+        item["x1"] += dx
+        item["y1"] += dy
 
     def increase_width(self) -> None:
         self.stroke_width.set(min(12, self.stroke_width.get() + 1))
