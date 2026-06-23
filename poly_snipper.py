@@ -35,7 +35,7 @@ except ImportError:  # The script still works without tray support during develo
 
 
 APP_NAME = "Poly Snipper"
-APP_VERSION = "0.1.7"
+APP_VERSION = "0.1.8"
 RELEASES_API = "https://api.github.com/repos/M1nt18/poly-snipper/releases/latest"
 LATEST_INSTALLER_URL = "https://github.com/M1nt18/poly-snipper/releases/latest/download/PolySnipperSetup.exe"
 HOTKEY_ID = 0x504F4C59
@@ -463,19 +463,33 @@ class EditorWindow(tk.Toplevel):
             return "break"
         self.selected_index = None
         self.active_data = {"type": tool, "x0": x, "y0": y, "x1": x, "y1": y, "color": color, "width": width}
-        if tool == "pen":
+        if tool in {"pen", "mosaic"}:
             self.pen_points = [(x, y)]
             self.active_data["points"] = self.pen_points
-            self.active_canvas_item = self.canvas.create_line(
-                event.x,
-                event.y,
-                event.x,
-                event.y,
-                fill=color,
-                width=self.scaled_width(width),
-                capstyle="round",
-                smooth=True,
-            )
+            if tool == "mosaic":
+                brush = self.scaled_width(max(8, width * 4))
+                self.active_canvas_item = self.canvas.create_line(
+                    event.x,
+                    event.y,
+                    event.x,
+                    event.y,
+                    fill="#ffffff",
+                    width=brush,
+                    capstyle="round",
+                    smooth=True,
+                    stipple="gray50",
+                )
+            else:
+                self.active_canvas_item = self.canvas.create_line(
+                    event.x,
+                    event.y,
+                    event.x,
+                    event.y,
+                    fill=color,
+                    width=self.scaled_width(width),
+                    capstyle="round",
+                    smooth=True,
+                )
         else:
             self.active_canvas_item = self.draw_item(self.active_data, temporary=True)
         return "break"
@@ -496,7 +510,7 @@ class EditorWindow(tk.Toplevel):
         x, y = self.canvas_to_image(event.x, event.y)
         self.active_data["x1"] = x
         self.active_data["y1"] = y
-        if tool == "pen":
+        if tool in {"pen", "mosaic"}:
             self.pen_points.append((x, y))
             coords: list[float] = []
             for px, py in self.pen_points:
@@ -550,7 +564,8 @@ class EditorWindow(tk.Toplevel):
         if item_type == "mosaic":
             if not temporary:
                 self.draw_canvas_mosaic(item)
-            return self.canvas.create_rectangle(x0, y0, x1, y1, outline="#ffffff", dash=(3, 3), width=1)
+                return self.draw_mosaic_outline(item)
+            return 0
         if item_type == "pen":
             coords: list[float] = []
             for px, py in item.get("points", []):
@@ -602,7 +617,7 @@ class EditorWindow(tk.Toplevel):
     def hit_item(self, item: dict, x: float, y: float) -> bool:
         width = max(6.0, float(item.get("width", 3)) + 5.0)
         item_type = item["type"]
-        if item_type in {"rect", "ellipse", "mosaic"}:
+        if item_type in {"rect", "ellipse"}:
             bbox = self.item_bbox(item)
             if bbox is None:
                 return False
@@ -619,6 +634,16 @@ class EditorWindow(tk.Toplevel):
                 self.distance_to_segment(x, y, x0, y0, x1, y1) <= width
                 for (x0, y0), (x1, y1) in zip(points, points[1:])
             )
+        if item_type == "mosaic":
+            brush = max(8.0, float(item.get("width", 3)) * 4.0)
+            points = item.get("points", [])
+            if len(points) == 1:
+                px, py = points[0]
+                return self.distance_to_segment(x, y, px, py, px, py) <= brush
+            return any(
+                self.distance_to_segment(x, y, x0, y0, x1, y1) <= brush
+                for (x0, y0), (x1, y1) in zip(points, points[1:])
+            )
         if item_type == "text":
             bbox = self.item_bbox(item)
             if bbox is None:
@@ -630,17 +655,18 @@ class EditorWindow(tk.Toplevel):
     def item_bbox(self, item: dict) -> tuple[float, float, float, float] | None:
         item_type = item["type"]
         pad = max(4.0, float(item.get("width", 3)) + 3.0)
-        if item_type in {"rect", "ellipse", "arrow", "mosaic"}:
+        if item_type in {"rect", "ellipse", "arrow"}:
             x0, x1 = sorted((float(item["x0"]), float(item["x1"])))
             y0, y1 = sorted((float(item["y0"]), float(item["y1"])))
             return x0 - pad, y0 - pad, x1 + pad, y1 + pad
-        if item_type == "pen":
+        if item_type in {"pen", "mosaic"}:
             points = item.get("points", [])
             if not points:
                 return None
             xs = [point[0] for point in points]
             ys = [point[1] for point in points]
-            return min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad
+            extra = max(pad, float(item.get("width", 3)) * 4.0 if item_type == "mosaic" else pad)
+            return min(xs) - extra, min(ys) - extra, max(xs) + extra, max(ys) + extra
         if item_type == "text":
             text = item.get("text", "")
             width = max(24.0, len(text) * max(12.0, float(item.get("width", 3)) * 7.0))
@@ -667,7 +693,7 @@ class EditorWindow(tk.Toplevel):
             item["x"] += dx
             item["y"] += dy
             return
-        if item["type"] == "pen":
+        if item["type"] in {"pen", "mosaic"}:
             item["points"] = [(x + dx, y + dy) for x, y in item.get("points", [])]
             return
         item["x0"] += dx
@@ -675,42 +701,80 @@ class EditorWindow(tk.Toplevel):
         item["x1"] += dx
         item["y1"] += dy
 
-    def normalized_rect(self, item: dict) -> tuple[int, int, int, int]:
-        x0, x1 = sorted((int(round(item["x0"])), int(round(item["x1"]))))
-        y0, y1 = sorted((int(round(item["y0"])), int(round(item["y1"]))))
-        x0 = max(0, min(self.image.width, x0))
-        x1 = max(0, min(self.image.width, x1))
-        y0 = max(0, min(self.image.height, y0))
-        y1 = max(0, min(self.image.height, y1))
-        return x0, y0, x1, y1
+    def mosaic_brush_width(self, item: dict) -> int:
+        return max(8, int(item.get("width", 3)) * 4)
 
-    def mosaic_region(self, image: Image.Image, item: dict) -> Image.Image | None:
-        x0, y0, x1, y1 = self.normalized_rect(item)
-        if x1 - x0 < 2 or y1 - y0 < 2:
-            return None
-        region = image.crop((x0, y0, x1, y1))
-        block = max(4, int(item.get("width", 3)) * 4)
+    def mosaic_mask(self, item: dict, size: tuple[int, int]) -> Image.Image:
+        mask = Image.new("L", size, 0)
+        draw = ImageDraw.Draw(mask)
+        points = item.get("points", [])
+        brush = self.mosaic_brush_width(item)
+        if len(points) == 1:
+            x, y = points[0]
+            radius = brush / 2
+            draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=255)
+        elif len(points) > 1:
+            draw.line(points, fill=255, width=brush, joint="curve")
+            radius = brush / 2
+            for x, y in points:
+                draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=255)
+        return mask
+
+    def apply_mosaic_stroke(self, image: Image.Image, item: dict) -> None:
+        mask = self.mosaic_mask(item, image.size)
+        bbox = mask.getbbox()
+        if bbox is None:
+            return
+        x0, y0, x1, y1 = bbox
+        region = image.crop(bbox)
+        block = max(4, self.mosaic_brush_width(item) // 2)
         small_w = max(1, region.width // block)
         small_h = max(1, region.height // block)
-        return region.resize((small_w, small_h), Image.Resampling.BILINEAR).resize(region.size, Image.Resampling.NEAREST)
+        mosaic = region.resize((small_w, small_h), Image.Resampling.BILINEAR).resize(region.size, Image.Resampling.NEAREST)
+        image.paste(mosaic, (x0, y0), mask.crop(bbox))
 
     def draw_canvas_mosaic(self, item: dict) -> None:
         preview = self.render_image(up_to_item=item)
-        x0, y0, x1, y1 = self.normalized_rect(item)
-        if x1 <= x0 or y1 <= y0:
-            return
-        region = preview.crop((x0, y0, x1, y1))
-        display = region.resize(
+        self.apply_mosaic_stroke(preview, item)
+        display = preview.resize(
             (
-                max(1, round(region.width * self.scale)),
-                max(1, round(region.height * self.scale)),
+                max(1, round(preview.width * self.scale)),
+                max(1, round(preview.height * self.scale)),
             ),
-            Image.Resampling.NEAREST,
+            Image.Resampling.LANCZOS,
         )
         photo = ImageTk.PhotoImage(display)
         item["_preview_photo"] = photo
-        cx, cy = self.image_to_canvas(x0, y0)
-        self.canvas.create_image(cx, cy, image=photo, anchor="nw")
+        self.canvas.create_image(0, 0, image=photo, anchor="nw")
+
+    def draw_mosaic_outline(self, item: dict) -> int:
+        points = item.get("points", [])
+        if not points:
+            return 0
+        coords: list[float] = []
+        for px, py in points:
+            cx, cy = self.image_to_canvas(px, py)
+            coords.extend([cx, cy])
+        if len(coords) < 4:
+            x, y = coords
+            brush = self.scaled_width(self.mosaic_brush_width(item))
+            return self.canvas.create_oval(
+                x - brush / 2,
+                y - brush / 2,
+                x + brush / 2,
+                y + brush / 2,
+                outline="#ffffff",
+                dash=(3, 3),
+                width=1,
+            )
+        return self.canvas.create_line(
+            *coords,
+            fill="#ffffff",
+            width=self.scaled_width(self.mosaic_brush_width(item)),
+            capstyle="round",
+            smooth=True,
+            stipple="gray50",
+        )
 
     def increase_width(self) -> None:
         self.stroke_width.set(min(12, self.stroke_width.get() + 1))
@@ -734,11 +798,8 @@ class EditorWindow(tk.Toplevel):
                 draw.line((item["x0"], item["y0"], item["x1"], item["y1"]), fill=color, width=width)
                 self.draw_arrow_head(draw, item, color, width)
             elif item["type"] == "mosaic":
-                region = self.mosaic_region(rendered, item)
-                if region is not None:
-                    x0, y0, _x1, _y1 = self.normalized_rect(item)
-                    rendered.paste(region, (x0, y0))
-                    draw = ImageDraw.Draw(rendered)
+                self.apply_mosaic_stroke(rendered, item)
+                draw = ImageDraw.Draw(rendered)
             elif item["type"] == "pen":
                 points = item.get("points", [])
                 if len(points) > 1:
