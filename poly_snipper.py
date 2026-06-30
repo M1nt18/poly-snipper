@@ -36,7 +36,7 @@ except ImportError:  # The script still works without tray support during develo
 
 
 APP_NAME = "Poly Snipper"
-APP_VERSION = "0.1.9"
+APP_VERSION = "0.1.10"
 RELEASES_API = "https://api.github.com/repos/M1nt18/poly-snipper/releases/latest"
 LATEST_INSTALLER_URL = "https://github.com/M1nt18/poly-snipper/releases/latest/download/PolySnipperSetup.exe"
 HOTKEY_ID = 0x504F4C59
@@ -231,7 +231,7 @@ class CaptureOverlay(tk.Toplevel):
         self.help_id = self.canvas.create_text(
             16,
             16,
-            text="拖动选择区域，Esc 取消",
+            text="拖动选择区域，Esc 或右键取消",
             fill="#ffffff",
             anchor="nw",
             font=("Segoe UI", 13),
@@ -242,6 +242,7 @@ class CaptureOverlay(tk.Toplevel):
         self.canvas.bind("<ButtonPress-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
+        self.canvas.bind("<ButtonPress-3>", lambda _event: self.cancel())
         self.focus_force()
 
     def cancel(self) -> None:
@@ -361,6 +362,7 @@ class EditorWindow(tk.Toplevel):
         self.canvas.bind("<ButtonPress-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
+        self.canvas.bind("<ButtonPress-3>", self.discard_editor)
 
         toolbar = tk.Frame(self, bg="#202020")
         toolbar.pack(side="bottom", fill="x")
@@ -854,6 +856,13 @@ class EditorWindow(tk.Toplevel):
             self.copy_current_to_clipboard(show_error=False)
         finally:
             self.destroy()
+
+    def discard_editor(self, _event: tk.Event | None = None) -> str:
+        if self.clipboard_after_id is not None:
+            self.after_cancel(self.clipboard_after_id)
+            self.clipboard_after_id = None
+        self.destroy()
+        return "break"
 
     def save_as(self) -> None:
         target = filedialog.asksaveasfilename(
