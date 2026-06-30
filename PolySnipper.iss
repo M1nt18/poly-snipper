@@ -1,5 +1,5 @@
 #define MyAppName "Poly Snipper"
-#define MyAppVersion "0.1.8"
+#define MyAppVersion "0.1.9"
 #define MyAppPublisher "POLY"
 #define MyAppExeName "PolySnipper.exe"
 

@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -35,7 +36,7 @@ except ImportError:  # The script still works without tray support during develo
 
 
 APP_NAME = "Poly Snipper"
-APP_VERSION = "0.1.8"
+APP_VERSION = "0.1.9"
 RELEASES_API = "https://api.github.com/repos/M1nt18/poly-snipper/releases/latest"
 LATEST_INSTALLER_URL = "https://github.com/M1nt18/poly-snipper/releases/latest/download/PolySnipperSetup.exe"
 HOTKEY_ID = 0x504F4C59
@@ -144,7 +145,13 @@ def copy_image_to_clipboard(image: Image.Image) -> None:
     ctypes.memmove(locked, dib, len(dib))
     kernel32.GlobalUnlock(h_global)
 
-    if not user32.OpenClipboard(None):
+    opened = False
+    for _attempt in range(12):
+        if user32.OpenClipboard(None):
+            opened = True
+            break
+        time.sleep(0.05)
+    if not opened:
         kernel32.GlobalFree(h_global)
         raise OSError("OpenClipboard failed")
 
@@ -328,6 +335,7 @@ class EditorWindow(tk.Toplevel):
         self.moving_index: int | None = None
         self.move_last: tuple[float, float] | None = None
         self.clipboard_after_id: str | None = None
+        self.clipboard_error_shown = False
 
         self.title(f"{APP_NAME} - {path.name}")
         self.attributes("-topmost", True)
@@ -425,14 +433,18 @@ class EditorWindow(tk.Toplevel):
     def schedule_clipboard_update(self) -> None:
         if self.clipboard_after_id is not None:
             self.after_cancel(self.clipboard_after_id)
-        self.clipboard_after_id = self.after(180, self.copy_current_to_clipboard_silent)
+        self.clipboard_after_id = self.after_idle(self.copy_current_to_clipboard)
 
-    def copy_current_to_clipboard_silent(self) -> None:
+    def copy_current_to_clipboard(self, show_error: bool = False) -> bool:
         self.clipboard_after_id = None
         try:
             copy_image_to_clipboard(self.render_image())
-        except OSError:
-            pass
+            return True
+        except Exception as exc:
+            if show_error:
+                self.clipboard_error_shown = True
+                messagebox.showwarning(APP_NAME, f"自动复制失败，请点“复制”重试：\n{exc}", parent=self)
+            return False
 
     def on_tool_changed(self) -> None:
         self.canvas.configure(cursor="fleur" if self.tool.get() == "move" else "crosshair")
@@ -832,17 +844,16 @@ class EditorWindow(tk.Toplevel):
         return ImageFont.load_default()
 
     def copy_again(self) -> None:
-        try:
-            copy_image_to_clipboard(self.render_image())
-        except OSError as exc:
-            messagebox.showerror(APP_NAME, f"复制失败：{exc}")
+        self.copy_current_to_clipboard(show_error=True)
 
     def close_editor(self) -> None:
         if self.clipboard_after_id is not None:
             self.after_cancel(self.clipboard_after_id)
             self.clipboard_after_id = None
-        self.copy_current_to_clipboard_silent()
-        self.destroy()
+        try:
+            self.copy_current_to_clipboard(show_error=False)
+        finally:
+            self.destroy()
 
     def save_as(self) -> None:
         target = filedialog.asksaveasfilename(
@@ -862,6 +873,7 @@ class PolySnipperApp:
         self.tray_icon = None
         self.tray_thread: threading.Thread | None = None
         self.update_in_progress = False
+        self.quitting = False
         self.root = tk.Tk()
         self.root.title(APP_NAME)
         self.root.geometry("360x176")
@@ -1086,11 +1098,19 @@ class PolySnipperApp:
         self.quit()
 
     def quit(self) -> None:
-        if self.tray_icon is not None:
-            self.tray_icon.stop()
-            self.tray_icon = None
+        if self.quitting:
+            return
+        self.quitting = True
+        tray_icon = self.tray_icon
+        self.tray_icon = None
+        if tray_icon is not None:
+            threading.Thread(target=tray_icon.stop, daemon=True).start()
         self.listener.stop()
-        self.root.destroy()
+        try:
+            self.root.quit()
+            self.root.destroy()
+        except tk.TclError:
+            pass
 
     def run(self) -> None:
         self.root.mainloop()
